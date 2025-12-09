@@ -1,0 +1,5 @@
+{
+  "name": "Gemini RAG Master",
+  "description": "A comprehensive RAG chatbot management system featuring Gemini 2.5/3 integration, multi-channel configuration, performance analytics, and duplicate-proof document ingestion.",
+  "requestFramePermissions": []
+}
