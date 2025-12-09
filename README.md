@@ -35,3 +35,4 @@ Pour que le chatbot fonctionne réellement sur WhatsApp, vous devez lancer le se
 7. Dans Meta, configurez le "Verify Token" sur `rag_master_verify_token`.
 
 Une fois connecté, tout message envoyé au numéro WhatsApp de test sera traité par Gemini via `server.js`.
+"# gemini-rag-master" 
