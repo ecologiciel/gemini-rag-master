@@ -1,3 +1,10 @@
-git add .
-git commit -m "Fix deployment: Add tsconfig.node.json and remove build script"
-git push
+{
+  "compilerOptions": {
+    "composite": true,
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true
+  },
+  "include": ["vite.config.ts"]
+}
