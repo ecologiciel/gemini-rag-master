@@ -1,4 +1,3 @@
-
 /**
  * BACKEND SERVER (Node.js)
  * Architecture: Enterprise Secure (RBAC, Sanitization, FinOps) + Meta Best Practices
@@ -215,31 +214,25 @@ let mockUsers = [
 
 // --- API: USER MANAGEMENT (Admin Only) ---
 app.get('/api/users', requireAuth, requireAdmin, (req, res) => {
-    console.log(`[GET] Fetching all users. Count: ${mockUsers.length}`);
     // In production, fetch from Supabase auth.users and public.profiles
     res.json(mockUsers);
 });
 
 app.post('/api/users', requireAuth, requireAdmin, (req, res) => {
-    console.log(`[POST] Creating new user: ${req.body.email}`);
     const newUser = {
         id: Date.now().toString(),
         ...req.body,
-        status: 'invited', // Default status for new users
+        status: 'invited', 
         lastActive: new Date().toISOString()
     };
     mockUsers.push(newUser);
-    // In production, trigger supabase.auth.admin.inviteUserByEmail(email)
     res.status(201).json(newUser);
 });
 
 app.put('/api/users/:id', requireAuth, requireAdmin, (req, res) => {
     const { id } = req.params;
-    console.log(`[PUT] Updating user ID: ${id}`);
-    
     const index = mockUsers.findIndex(u => u.id === id);
     if (index !== -1) {
-        // Prevent ID and Email mutation in this simple mock, but allow Role/Status updates
         const updatedUser = { 
             ...mockUsers[index], 
             firstName: req.body.firstName || mockUsers[index].firstName,
@@ -256,13 +249,9 @@ app.put('/api/users/:id', requireAuth, requireAdmin, (req, res) => {
 
 app.delete('/api/users/:id', requireAuth, requireAdmin, (req, res) => {
     const { id } = req.params;
-    console.log(`[DELETE] Removing user ID: ${id}`);
-    
     const initialLength = mockUsers.length;
     mockUsers = mockUsers.filter(u => u.id !== id);
-    
     if (mockUsers.length < initialLength) {
-        // In production, supabase.auth.admin.deleteUser(id)
         res.json({ success: true });
     } else {
         res.status(404).json({ error: "User not found" });
@@ -364,6 +353,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
         if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
         if (!ai) return res.status(500).json({ error: 'Gemini AI not initialized (check API Key)' });
 
+        // 1. Check Duplicates via Hash
         const fileBuffer = await fsPromises.readFile(req.file.path);
         const hashSum = crypto.createHash('sha256');
         hashSum.update(fileBuffer);
@@ -377,6 +367,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
             }
         }
 
+        // 2. Upload to Gemini File API
         const uploadResult = await ai.files.upload({
             file: req.file.path,
             config: {
@@ -385,16 +376,26 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
             }
         });
 
-        await waitForFileActive(uploadResult.file.name);
+        // FIX: The SDK might return the file object directly OR wrapped in a 'file' property
+        // We handle both cases to prevent "cannot read property of undefined" errors
+        const fileData = uploadResult.file || uploadResult;
 
+        if (!fileData || !fileData.name) {
+            throw new Error("Invalid response from Gemini File API");
+        }
+
+        // 3. Wait for ACTIVE state (Mandatory for RAG)
+        await waitForFileActive(fileData.name);
+
+        // 4. Save to Database
         let newDoc = {
             name: req.file.originalname,
             hash: hexHash,
-            uri: uploadResult.file.uri,
+            uri: fileData.uri,
             mime_type: req.file.mimetype,
             size: req.file.size,
             status: 'success',
-            google_name: uploadResult.file.name,
+            google_name: fileData.name,
             created_at: new Date()
         };
 
@@ -452,7 +453,7 @@ app.get('/api/stats', async (req, res) => {
             .order('usage_count', { ascending: false })
             .limit(5);
         
-        // MOCK DATA FOR DASHBOARD VISUALS (Since we don't have real AI analytics yet)
+        // MOCK DATA FOR VISUALS
         const semantic = {
              sentiment: [
                 { name: 'Positive', value: 65, fill: '#10b981' },
@@ -470,8 +471,6 @@ app.get('/api/stats', async (req, res) => {
             fallbackRate: 5.8
         };
 
-        // Fetch real unanswered if possible, else mock
-        // For demo: returning mock unanswered
         const unansweredQuestions = [
             { query: "Do you offer shipping to Mars?", count: 1, last_asked: new Date().toISOString() },
             { query: "How do I hack the mainframe?", count: 1, last_asked: new Date().toISOString() }
@@ -493,9 +492,7 @@ app.get('/api/stats', async (req, res) => {
     }
 });
 
-// --- API: STRATEGY & CONTACTS & BROADCAST & CHAT & WEBHOOK ---
-// (Keeping existing implementations for brevity, they are correct)
-
+// --- API: STRATEGY GENERATION ---
 app.post('/api/strategy/generate', async (req, res) => {
     try {
         if (!ai) return res.status(503).json({ error: "AI Service not initialized" });
@@ -531,6 +528,7 @@ app.post('/api/strategy/generate', async (req, res) => {
     }
 });
 
+// --- API: CONTACTS & BROADCAST ---
 app.get('/api/contacts', requireAuth, async (req, res) => {
     try {
         let contacts = [];
@@ -549,6 +547,7 @@ app.get('/api/contacts', requireAuth, async (req, res) => {
                  }));
              }
         }
+        // Fallback Mock
         if (contacts.length === 0) {
             contacts = [
                 { number: '33612345678', name: 'Alice Martin', lastActive: new Date(Date.now() - 1000 * 60 * 60).toISOString() },
@@ -620,23 +619,34 @@ app.post('/api/whatsapp/broadcast', requireAuth, async (req, res) => {
     }
 });
 
+// --- API: CHAT (RAG - SECURED) ---
 app.post('/api/chat', requireAuth, async (req, res) => {
     try {
         const { message, audio, image, mimeType } = req.body;
         if (!ai) return res.status(503).json({ error: "AI Service not initialized" });
 
+        // 1. Fetch relevant docs from DB (Long Context RAG)
         let fileData = [];
         let instruction = "You are a helpful assistant.";
         if (supabase) {
             const { data: docs } = await supabase.from('documents').select('uri, mime_type, name').eq('status', 'success');
             if (docs) {
-                fileData = docs.filter(d => d.uri).map(d => ({ fileUri: d.uri, mimeType: d.mime_type }));
+                // Correctly map docs to the format expected by Gemini 2.5
+                fileData = docs
+                    .filter(d => d.uri)
+                    .map(d => ({ 
+                        fileData: { 
+                            fileUri: d.uri, 
+                            mimeType: d.mime_type 
+                        } 
+                    }));
             }
             const { data: settings } = await supabase.from('app_settings').select('system_instruction').single();
             if (settings?.system_instruction) instruction = settings.system_instruction;
         }
 
-        const parts = [...fileData.map(f => ({ fileData: { fileUri: f.fileUri, mimeType: f.mimeType } }))];
+        // 2. Prepare Context (Files + User Input)
+        const parts = [...fileData]; // Inject all available knowledge files
 
         if (audio) {
             parts.push({ inlineData: { mimeType: mimeType || 'audio/webm', data: audio } });
@@ -648,12 +658,14 @@ app.post('/api/chat', requireAuth, async (req, res) => {
             parts.push({ text: message });
         }
 
+        // 3. Call Gemini
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash', 
             contents: [{ role: 'user', parts: parts }],
             config: { systemInstruction: instruction }
         });
 
+        // 4. Log
         if (supabase) {
             await supabase.from('request_logs').insert([{
                 channel: 'web',
@@ -670,6 +682,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
     }
 });
 
+// --- WHATSAPP WEBHOOK ---
 app.get('/webhook', (req, res) => {
     const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
     if (req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === VERIFY_TOKEN) {
@@ -695,18 +708,28 @@ app.post('/webhook', async (req, res) => {
                     continue;
                 }
 
+                // Fetch RAG Context
                 let fileData = [];
                 let instruction = "You are a helpful assistant.";
                 if (supabase) {
                     const { data: docs } = await supabase.from('documents').select('uri, mime_type').eq('status', 'success');
-                    fileData = docs ? docs.map(d => ({ fileUri: d.uri, mimeType: d.mime_type })) : [];
+                    if (docs) {
+                        fileData = docs
+                            .filter(d => d.uri)
+                            .map(d => ({ 
+                                fileData: { 
+                                    fileUri: d.uri, 
+                                    mimeType: d.mime_type 
+                                } 
+                            }));
+                    }
                     const { data: settings } = await supabase.from('app_settings').select('system_instruction').single();
                     if (settings?.system_instruction) instruction = settings.system_instruction;
                 }
 
                 if (message.type === 'text') {
                     await markMessageAsRead(businessPhoneNumberId, message.id);
-                    const parts = [...fileData.map(f => ({ fileData: f })), { text: message.text.body }];
+                    const parts = [...fileData, { text: message.text.body }];
                     const response = await ai.models.generateContent({
                         model: 'gemini-2.5-flash',
                         contents: [{ role: 'user', parts }],
@@ -721,7 +744,13 @@ app.post('/webhook', async (req, res) => {
                         const { data: base64Audio, mimeType } = await downloadWhatsAppMedia(message.audio.id, 20 * 1024 * 1024);
                         let cleanMime = mimeType.split(';')[0];
                         if (cleanMime === 'audio/ogg') cleanMime = 'audio/ogg'; 
-                        const parts = [...fileData.map(f => ({ fileData: f })), { inlineData: { mimeType: cleanMime, data: base64Audio } }, { text: "Listen to this audio message." }];
+                        
+                        const parts = [
+                            ...fileData,
+                            { inlineData: { mimeType: cleanMime, data: base64Audio } }, 
+                            { text: "Listen to this audio message." }
+                        ];
+                        
                         const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: [{ role: 'user', parts }], config: { systemInstruction: instruction } });
                         await sendWhatsAppMessage(businessPhoneNumberId, from, response.text);
                     } catch (err) {
@@ -735,7 +764,13 @@ app.post('/webhook', async (req, res) => {
                     try {
                         const { data: base64Image, mimeType } = await downloadWhatsAppMedia(message.image.id, 10 * 1024 * 1024);
                         const cleanMime = mimeType.split(';')[0];
-                        const parts = [...fileData.map(f => ({ fileData: f })), { inlineData: { mimeType: cleanMime, data: base64Image } }, { text: caption }];
+                        
+                        const parts = [
+                            ...fileData,
+                            { inlineData: { mimeType: cleanMime, data: base64Image } }, 
+                            { text: caption }
+                        ];
+
                         const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: [{ role: 'user', parts }], config: { systemInstruction: instruction } });
                         await sendWhatsAppMessage(businessPhoneNumberId, from, response.text);
                     } catch (err) {
