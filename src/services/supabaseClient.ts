@@ -26,8 +26,8 @@ const envUrl = getEnv('SUPABASE_URL');
 const envKey = getEnv('SUPABASE_ANON_KEY');
 
 // VALEURS DE REMPLACEMENT (Si le .env ne passe pas)
-const HARDCODED_URL = 'YOUR_SUPABASE_URL'; // Remplacez ceci si nécessaire
-const HARDCODED_KEY = 'YOUR_SUPABASE_ANON_KEY'; // Remplacez ceci si nécessaire
+const HARDCODED_URL = 'https://bfgmwkbfbrqpivcfjzrd.supabase.co'; // Remplacez ceci si nécessaire
+const HARDCODED_KEY = 'sb_publishable_Lixl90Yn-19ctU_pZ_9XGQ_QJts8qoR'; // Remplacez ceci si nécessaire
 
 const supabaseUrl = (envUrl && envUrl !== 'undefined') ? envUrl : HARDCODED_URL;
 const supabaseAnonKey = (envKey && envKey !== 'undefined') ? envKey : HARDCODED_KEY;
