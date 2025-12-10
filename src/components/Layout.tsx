@@ -1,6 +1,6 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { LayoutDashboard, MessageSquareText, Database, Settings, LogOut, Bot, Compass, Menu, Bell, Search, User, Users } from 'lucide-react';
+import { LayoutDashboard, MessageSquare, Database, Settings, LogOut, Bot, Compass, Menu, Bell, Search, User, Users } from 'lucide-react';
 import { supabase } from '../services/supabaseClient';
 import { ViewState } from '../types';
 
@@ -18,7 +18,7 @@ const Layout: React.FC<LayoutProps> = ({ currentView, onChangeView, userRole, ch
   const navItems = [
     { id: ViewState.DASHBOARD, label: 'Analytics Overview', icon: LayoutDashboard },
     { id: ViewState.STRATEGY, label: 'Strategy Streams', icon: Compass },
-    { id: ViewState.CHAT, label: 'Inbox / Chat', icon: MessageSquareText },
+    { id: ViewState.CHAT, label: 'Inbox / Chat', icon: MessageSquare },
     { id: ViewState.KNOWLEDGE, label: 'Content Library', icon: Database },
     // Only show Settings & Users to Admin
     ...(userRole === 'admin' ? [
@@ -185,4 +185,3 @@ const Layout: React.FC<LayoutProps> = ({ currentView, onChangeView, userRole, ch
 };
 
 export default Layout;
-    
