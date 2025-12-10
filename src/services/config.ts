@@ -1,13 +1,12 @@
+// src/services/config.ts
 
-// Si l'application tourne sur Vercel (Production), on utilise l'URL Railway.
-// Sinon (Local), on utilise localhost:3000.
+// Vérification sécurisée de l'environnement (évite le crash 'undefined' sur certains navigateurs)
+// @ts-ignore
+const isProduction = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env.PROD : false;
 
-const isProduction = import.meta.env.PROD;
-
-// TODO: Une fois déployé sur Railway, remplacez la chaîne vide ci-dessous par votre URL Railway (ex: https://mon-projet.up.railway.app)
+// VOTRE URL RAILWAY EXACTE (Celle de votre capture d'écran)
 const PRODUCTION_URL = 'https://gemini-rag-master-production.up.railway.app'; 
 
 export const API_URL = isProduction 
   ? PRODUCTION_URL 
   : 'http://localhost:3000';
-
