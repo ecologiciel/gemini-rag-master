@@ -14,7 +14,7 @@ const crypto = require('crypto');
 const multer = require('multer');
 const rateLimit = require('express-rate-limit');
 const axios = require('axios'); // Required for WhatsApp Media Download
-const { GoogleGenAI, SchemaType, Type } = require('@google/genai');
+const { GoogleGenAI } = require('@google/genai');
 const { createClient } = require('@supabase/supabase-js');
 const { createClient: createRedisClient } = require('redis');
 
@@ -368,6 +368,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
         }
 
         // 2. Upload to Gemini File API
+        console.log(`Uploading ${req.file.originalname} to Gemini...`);
         const uploadResult = await ai.files.upload({
             file: req.file.path,
             config: {
@@ -375,13 +376,20 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
                 displayName: req.file.originalname,
             }
         });
+        
+        console.log("Gemini Upload Raw Response:", JSON.stringify(uploadResult, null, 2));
 
-        // FIX: The SDK might return the file object directly OR wrapped in a 'file' property
-        // We handle both cases to prevent "cannot read property of undefined" errors
-        const fileData = uploadResult.file || uploadResult;
+        // ROBUST: The SDK might return the file object directly OR wrapped in a 'file' property
+        let fileData = null;
+        if (uploadResult.file) {
+            fileData = uploadResult.file;
+        } else if (uploadResult.name) {
+            // If the response IS the file object itself
+            fileData = uploadResult;
+        }
 
         if (!fileData || !fileData.name) {
-            throw new Error("Invalid response from Gemini File API");
+            throw new Error("Invalid response format from Gemini File API. Check logs.");
         }
 
         // 3. Wait for ACTIVE state (Mandatory for RAG)
