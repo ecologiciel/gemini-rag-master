@@ -1,3 +1,4 @@
+
 /**
  * BACKEND SERVER (Node.js)
  * Architecture: Enterprise Secure (RBAC, Sanitization, FinOps) + Meta Best Practices
@@ -36,9 +37,17 @@ async function initRedis() {
 initRedis();
 
 const app = express();
+
+// CRITICAL FIX FOR RAILWAY/HEROKU: Trust the load balancer
+// This prevents the "X-Forwarded-For" header error in logs
+app.set('trust proxy', 1);
+
 app.use(cors());
 // Increased limit to support Base64 audio/image payloads from frontend
 app.use(bodyParser.json({ limit: '50mb', verify: (req, res, buf) => { req.rawBody = buf } }));
+
+// Serve frontend static files (Production Mode)
+app.use(express.static('dist'));
 
 const PORT = process.env.PORT || 3000;
 
@@ -60,7 +69,13 @@ if (GEMINI_API_KEY) {
 
 // Middleware
 const upload = multer({ dest: 'uploads/' });
-const apiLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 200 });
+
+// Rate Limiter configuration adjusted for Proxies
+const apiLimiter = rateLimit({ 
+    windowMs: 15 * 60 * 1000, 
+    max: 200,
+    validate: { xForwardedForHeader: false } // CRITICAL: Disable strict validation to prevent crashes behind Railway proxy
+});
 app.use('/api/', apiLimiter);
 
 // --- AUTH MIDDLEWARE ---
@@ -85,6 +100,36 @@ function requireAdmin(req, res, next) {
         return res.status(403).json({ error: "Access Denied: Admins only" });
     }
     next();
+}
+
+// --- UTILS: RETRY LOGIC (Fix for 503 Errors) ---
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function callGeminiWithRetry(modelName, params, retries = 3) {
+    if (!ai) throw new Error("AI Service not initialized");
+    
+    for (let i = 0; i < retries; i++) {
+        try {
+            // Determine if using generateContent or generateImages based on context, 
+            // but for now, we wrap generateContent as it is the primary chat function.
+            // Using ai.models.generateContent pattern from Google GenAI SDK
+            return await ai.models.generateContent({
+                model: modelName,
+                ...params
+            });
+        } catch (error) {
+            // Retry on 503 (Overloaded) or 429 (Rate Limit) or 500 (Internal)
+            const isTransient = error.status === 503 || error.status === 429 || error.status === 500;
+            
+            if (isTransient && i < retries - 1) {
+                const delay = Math.pow(2, i) * 1000 + Math.random() * 500; // Exponential backoff
+                console.warn(`⚠️ Gemini API Error (${error.status}). Retrying in ${delay.toFixed(0)}ms...`);
+                await sleep(delay);
+                continue;
+            }
+            throw error;
+        }
+    }
 }
 
 // --- UTILS: FILE PROCESSING ---
@@ -518,7 +563,6 @@ app.get('/api/stats', async (req, res) => {
 // --- API: STRATEGY GENERATION ---
 app.post('/api/strategy/generate', async (req, res) => {
     try {
-        if (!ai) return res.status(503).json({ error: "AI Service not initialized" });
         const config = req.body;
         
         const prompt = `
@@ -534,8 +578,7 @@ app.post('/api/strategy/generate', async (req, res) => {
         { "synthesis": "...", "themes": [{ "title": "...", "content": [{ "platform": "WhatsApp", "content": "..." }] }] }
         `;
 
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+        const response = await callGeminiWithRetry('gemini-2.5-flash', {
             contents: prompt,
             config: { responseMimeType: 'application/json' }
         });
@@ -646,8 +689,7 @@ app.post('/api/whatsapp/broadcast', requireAuth, async (req, res) => {
 app.post('/api/chat', requireAuth, async (req, res) => {
     try {
         const { message, audio, image, mimeType } = req.body;
-        if (!ai) return res.status(503).json({ error: "AI Service not initialized" });
-
+        
         // 1. Fetch relevant docs from DB (Long Context RAG)
         let fileData = [];
         let instruction = "RÔLE: Assistant officiel du Ministère de la Solidarité (Maroc). Mission: Informer sur les services sociaux (RSU, RNP, Handicap) en se basant UNIQUEMENT sur le contexte fourni.";
@@ -681,9 +723,8 @@ app.post('/api/chat', requireAuth, async (req, res) => {
             parts.push({ text: message });
         }
 
-        // 3. Call Gemini
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash', 
+        // 3. Call Gemini with Retry (Fix for 503)
+        const response = await callGeminiWithRetry('gemini-2.5-flash', {
             contents: [{ role: 'user', parts: parts }],
             config: { systemInstruction: instruction }
         });
@@ -753,8 +794,8 @@ app.post('/webhook', async (req, res) => {
                 if (message.type === 'text') {
                     await markMessageAsRead(businessPhoneNumberId, message.id);
                     const parts = [...fileData, { text: message.text.body }];
-                    const response = await ai.models.generateContent({
-                        model: 'gemini-2.5-flash',
+                    // Use retry wrapper
+                    const response = await callGeminiWithRetry('gemini-2.5-flash', {
                         contents: [{ role: 'user', parts }],
                         config: { systemInstruction: instruction }
                     });
@@ -774,7 +815,10 @@ app.post('/webhook', async (req, res) => {
                             { text: "Listen to this audio message." }
                         ];
                         
-                        const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: [{ role: 'user', parts }], config: { systemInstruction: instruction } });
+                        const response = await callGeminiWithRetry('gemini-2.5-flash', {
+                            contents: [{ role: 'user', parts }],
+                            config: { systemInstruction: instruction }
+                        });
                         await sendWhatsAppMessage(businessPhoneNumberId, from, response.text);
                     } catch (err) {
                         await sendWhatsAppMessage(businessPhoneNumberId, from, "Error processing audio.");
@@ -794,7 +838,10 @@ app.post('/webhook', async (req, res) => {
                             { text: caption }
                         ];
 
-                        const response = await ai.models.generateContent({ model: 'gemini-2.5-flash', contents: [{ role: 'user', parts }], config: { systemInstruction: instruction } });
+                        const response = await callGeminiWithRetry('gemini-2.5-flash', {
+                            contents: [{ role: 'user', parts }],
+                            config: { systemInstruction: instruction }
+                        });
                         await sendWhatsAppMessage(businessPhoneNumberId, from, response.text);
                     } catch (err) {
                         await sendWhatsAppMessage(businessPhoneNumberId, from, "Error processing image.");
@@ -806,6 +853,15 @@ app.post('/webhook', async (req, res) => {
         }
     } else {
         res.sendStatus(404);
+    }
+});
+
+// Always serve static files for SPA routing
+app.get('*', (req, res) => {
+    if (fs.existsSync('dist/index.html')) {
+        res.sendFile('dist/index.html', { root: __dirname });
+    } else {
+        res.status(404).send("Frontend build not found. Run 'npm run build'.");
     }
 });
 
