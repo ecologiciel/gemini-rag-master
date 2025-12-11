@@ -362,6 +362,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
         if (supabase) {
             const { data: existing } = await supabase.from('documents').select('*').eq('hash', hexHash).single();
             if (existing) {
+                console.log(`⚠️ Duplicate file detected and rejected: ${req.file.originalname}`);
                 await fsPromises.unlink(req.file.path);
                 return res.status(409).json({ message: 'Duplicate file', file: existing });
             }
