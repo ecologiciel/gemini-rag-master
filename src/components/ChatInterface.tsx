@@ -210,7 +210,6 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ config }) => {
         setIsLoading(true);
 
         try {
-            // ... (Same logic as before for Simulator)
              let responseText = "";
              const { data: { session } } = await supabase.auth.getSession();
              let bodyPayload: any = { message: currentInput };
@@ -245,17 +244,197 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ config }) => {
             setIsLoading(false);
         }
       } 
-      // 2. INBOX MODE (Manual Reply - Advanced)
+      // 2. INBOX MODE (Manual Reply - NOW ENABLED)
       else {
-          alert("Manual reply feature for Inbox is not yet connected to WhatsApp API in this demo. Please use the Strategy Hub to broadcast messages.");
-          // In a real app, this would call /api/whatsapp/send endpoint
+          if (!selectedSessionId) {
+              alert("Please select a user to reply to.");
+              return;
+          }
+          
+          const session = sessions.find(s => s.userId === selectedSessionId);
+          if (!session) return;
+
+          // Optimistically update UI
+          const adminMsg: ChatMessage = {
+              id: Date.now().toString(),
+              role: 'model',
+              content: currentInput,
+              imageUrl: currentPreviewUrl || undefined,
+              timestamp: new Date()
+          };
+          setInboxMessages(prev => [...prev, adminMsg]);
+          setIsLoading(true);
+
+          // If channel is WhatsApp, send via API
+          if (session.channel === 'whatsapp') {
+             try {
+                const { data: { session: authSession } } = await supabase.auth.getSession();
+                
+                // Use the broadcast endpoint which handles sending to specific numbers
+                const response = await fetch(`${API_URL}/api/whatsapp/broadcast`, {
+                    method: 'POST',
+                    headers: { 
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${authSession?.access_token}`
+                    },
+                    body: JSON.stringify({
+                        numbers: [session.userId],
+                        type: 'text',
+                        message: currentInput
+                    })
+                });
+
+                if (!response.ok) throw new Error("Failed to send to WhatsApp API");
+
+             } catch (e) {
+                 console.error("Failed to send reply:", e);
+                 alert("Message failed to send to WhatsApp. Check API config.");
+             } finally {
+                 setIsLoading(false);
+             }
+          } else {
+             // Web/Simulator fallback
+             setTimeout(() => setIsLoading(false), 500); // Fake delay
+             console.log("Web channel reply simulation (no real-time socket)");
+          }
       }
   };
 
-  // --- AUDIO & IMAGE HELPERS (Preserved from original) ---
-  const startRecording = async () => { /* ... existing code ... */ }; // (Assuming simplified for XML limits, but logic stays)
-  const cancelRecording = () => { /* ... */ };
-  const stopAndSendAudio = async () => { /* ... */ };
+  // --- AUDIO & IMAGE HELPERS ---
+  const startRecording = async () => {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mediaRecorder = new MediaRecorder(stream);
+        mediaRecorderRef.current = mediaRecorder;
+        audioChunksRef.current = [];
+
+        mediaRecorder.ondataavailable = (event) => {
+            if (event.data.size > 0) audioChunksRef.current.push(event.data);
+        };
+
+        mediaRecorder.start();
+        setIsRecording(true);
+        setRecordingDuration(0);
+        timerRef.current = setInterval(() => {
+            setRecordingDuration(prev => prev + 1);
+        }, 1000);
+
+    } catch (err) {
+        console.error("Error accessing microphone:", err);
+        alert("Microphone access denied.");
+    }
+  };
+
+  const cancelRecording = () => {
+      if (mediaRecorderRef.current) {
+          mediaRecorderRef.current.stop();
+          mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+      }
+      setIsRecording(false);
+      if (timerRef.current) clearInterval(timerRef.current);
+      audioChunksRef.current = [];
+  };
+
+  const stopAndSendAudio = async () => {
+      if (!mediaRecorderRef.current) return;
+      mediaRecorderRef.current.stop();
+      mediaRecorderRef.current.stream.getTracks().forEach(track => track.stop());
+      setIsRecording(false);
+      if (timerRef.current) clearInterval(timerRef.current);
+
+      await new Promise(resolve => setTimeout(resolve, 200)); 
+
+      const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+      const audioUrl = URL.createObjectURL(audioBlob);
+
+      const userMessage: ChatMessage = {
+        id: Date.now().toString(),
+        role: 'user',
+        content: '🎤 [Voice Message]',
+        timestamp: new Date(),
+        audioUrl: audioUrl 
+      };
+
+      // Handle Simulator vs Inbox logic here
+      if (viewMode === 'inbox') {
+          if (!selectedSessionId) return;
+
+          // Optimistic UI Update for Inbox
+          setInboxMessages(prev => [...prev, userMessage]);
+          setIsLoading(true);
+
+          try {
+              const base64Audio = await blobToBase64(audioBlob);
+              const { data: { session: authSession } } = await supabase.auth.getSession();
+              
+              // Broadcast call with Type=Audio
+              const response = await fetch(`${API_URL}/api/whatsapp/broadcast`, {
+                  method: 'POST',
+                  headers: { 
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${authSession?.access_token}`
+                  },
+                  body: JSON.stringify({
+                      numbers: [selectedSessionId],
+                      type: 'audio', // New type
+                      audioData: base64Audio // Send blob
+                  })
+              });
+
+              if (!response.ok) throw new Error("Failed to send audio to WhatsApp");
+          } catch (e) {
+              console.error("Audio send failed", e);
+              alert("Failed to send audio message. Ensure WhatsApp API is configured correctly.");
+          } finally {
+              setIsLoading(false);
+          }
+      } else {
+          // SIMULATOR MODE
+          setLocalMessages(prev => [...prev, userMessage]);
+          setIsLoading(true);
+
+          try {
+              const base64Audio = await blobToBase64(audioBlob);
+              const { data: { session } } = await supabase.auth.getSession();
+              const token = session?.access_token;
+
+              const response = await fetch(`${API_URL}/api/chat`, {
+                  method: 'POST',
+                  headers: { 
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${token}` 
+                  },
+                  body: JSON.stringify({ 
+                      message: '',
+                      audio: base64Audio,
+                      mimeType: 'audio/webm'
+                  })
+              });
+
+              if (!response.ok) throw new Error('Backend error');
+              const data = await response.json();
+              
+              const aiMessage: ChatMessage = {
+                  id: (Date.now() + 1).toString(),
+                  role: 'model',
+                  content: data.response,
+                  timestamp: new Date(),
+              };
+              setLocalMessages(prev => [...prev, aiMessage]);
+          } catch (error) {
+              const errorMessage: ChatMessage = {
+                  id: Date.now().toString(),
+                  role: 'model',
+                  content: "Error processing audio message.",
+                  timestamp: new Date(),
+              };
+              setLocalMessages(prev => [...prev, errorMessage]);
+          } finally {
+              setIsLoading(false);
+          }
+      }
+  };
+
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
       if (e.target.files && e.target.files[0]) {
           const file = e.target.files[0];
@@ -410,6 +589,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ config }) => {
                                     </div>
                                 )}
                                 {msg.content && <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>}
+                                {msg.audioUrl && (
+                                    <div className="mt-2 bg-white/10 rounded p-2 flex items-center gap-2">
+                                        <audio controls src={msg.audioUrl} className="h-8 w-48" />
+                                    </div>
+                                )}
                             </div>
                             <span className="text-[10px] text-slate-400 mt-1 px-1 flex items-center gap-1">
                                 {msg.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
@@ -433,10 +617,10 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ config }) => {
             <div ref={messagesEndRef} />
         </div>
 
-        {/* Input Area (Only active if session selected or simulator) */}
+        {/* Input Area */}
         <div className={`p-4 bg-white border-t border-slate-200 relative ${(viewMode === 'inbox' && !selectedSessionId) ? 'opacity-50 pointer-events-none' : ''}`}>
             {/* Image Preview */}
-            {previewUrl && (
+            {previewUrl && !isRecording && (
                 <div className="absolute bottom-full left-4 mb-2 z-20 animate-fade-in">
                     <div className="relative group inline-block">
                         <img src={previewUrl} alt="Preview" className="h-20 w-auto rounded-md shadow-md border border-slate-300 bg-white" />
@@ -446,36 +630,78 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ config }) => {
                     </div>
                 </div>
             )}
-
-            <div className="border border-slate-300 rounded-2xl shadow-sm focus-within:ring-1 focus-within:ring-indigo-500 focus-within:border-indigo-500 bg-white transition-all overflow-hidden">
-                <textarea
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    onKeyDown={handleKeyDown}
-                    placeholder={viewMode === 'inbox' ? "Reply to user (Not available in demo)..." : "Type a message..."}
-                    className="w-full p-3 max-h-32 min-h-[50px] resize-none border-none focus:ring-0 text-sm text-slate-800 placeholder:text-slate-400"
-                    disabled={isLoading || (viewMode === 'inbox')}
-                />
-                <div className="flex items-center justify-between px-2 py-2 bg-slate-50 border-t border-slate-100">
-                    <div className="flex items-center gap-1">
-                        <input type="file" ref={fileInputRef} onChange={handleImageSelect} accept="image/*" className="hidden" />
-                        <button onClick={() => fileInputRef.current?.click()} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors"><ImageIcon className="w-4 h-4" /></button>
-                        <button className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors"><Smile className="w-4 h-4" /></button>
+            
+            {/* Recording UI */}
+            {isRecording ? (
+                <div className="absolute inset-0 z-20 bg-slate-50 flex items-center justify-between px-6 border-t border-slate-200">
+                    <div className="flex items-center gap-3">
+                        <div className="relative">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                            <div className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></div>
+                        </div>
+                        <span className="text-slate-700 font-mono font-bold">0:0{recordingDuration}</span>
+                        <span className="text-slate-400 text-xs ml-2">Recording...</span>
                     </div>
                     
-                    <button
-                        onClick={handleSend}
-                        disabled={(!input.trim() && !selectedImage) || isLoading}
-                        className={`p-2 rounded-full transition-all flex items-center justify-center ${
-                            (!input.trim() && !selectedImage) || isLoading
-                            ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                            : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm'
-                        }`}
-                    >
-                        <Send className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-3">
+                        <button 
+                            onClick={cancelRecording}
+                            className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"
+                        >
+                            <Trash2 className="w-5 h-5" />
+                        </button>
+                        <button 
+                            onClick={stopAndSendAudio}
+                            className="p-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full transition-colors shadow-md"
+                        >
+                            <Send className="w-5 h-5" />
+                        </button>
+                    </div>
                 </div>
-            </div>
+            ) : (
+                /* Text Input */
+                <div className="border border-slate-300 rounded-2xl shadow-sm focus-within:ring-1 focus-within:ring-indigo-500 focus-within:border-indigo-500 bg-white transition-all overflow-hidden">
+                    <textarea
+                        value={input}
+                        onChange={(e) => setInput(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder={viewMode === 'inbox' ? "Type a reply to this user..." : "Type a message..."}
+                        className="w-full p-3 max-h-32 min-h-[50px] resize-none border-none focus:ring-0 text-sm text-slate-800 placeholder:text-slate-400"
+                        disabled={isLoading}
+                    />
+                    <div className="flex items-center justify-between px-2 py-2 bg-slate-50 border-t border-slate-100">
+                        <div className="flex items-center gap-1">
+                            <input type="file" ref={fileInputRef} onChange={handleImageSelect} accept="image/*" className="hidden" />
+                            <button onClick={() => fileInputRef.current?.click()} className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors"><ImageIcon className="w-4 h-4" /></button>
+                            <button className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-full transition-colors"><Smile className="w-4 h-4" /></button>
+                            
+                            {/* Microphone Button (Now fully functional in Inbox too) */}
+                            {!input.trim() && !selectedImage && (
+                                <button
+                                    onClick={startRecording}
+                                    disabled={isLoading}
+                                    className="p-2 rounded-full text-slate-500 hover:bg-red-50 hover:text-red-600 transition-colors"
+                                    title="Record Audio"
+                                >
+                                    <Mic className="w-5 h-5" />
+                                </button>
+                             )}
+                        </div>
+                        
+                        <button
+                            onClick={handleSend}
+                            disabled={(!input.trim() && !selectedImage) || isLoading}
+                            className={`p-2 rounded-full transition-all flex items-center justify-center ${
+                                (!input.trim() && !selectedImage) || isLoading
+                                ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                                : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm'
+                            }`}
+                        >
+                            <Send className="w-4 h-4" />
+                        </button>
+                    </div>
+                </div>
+            )}
         </div>
       </div>
     </div>

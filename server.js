@@ -676,7 +676,7 @@ app.get('/api/contacts', requireAuth, async (req, res) => {
 
 app.post('/api/whatsapp/broadcast', requireAuth, async (req, res) => {
     try {
-        const { numbers, type, message, templateName, templateLang } = req.body;
+        const { numbers, type, message, templateName, templateLang, audioData } = req.body;
         let phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
         let whatsappToken = process.env.WHATSAPP_TOKEN;
 
@@ -690,17 +690,47 @@ app.post('/api/whatsapp/broadcast', requireAuth, async (req, res) => {
             return res.status(400).json({ error: "WhatsApp credentials missing in config." });
         }
         
-        const isTemplate = type === 'template';
         const results = { total: numbers.length, success: 0, failed: 0, errors: [] };
 
         for (const rawNumber of numbers) {
             const number = cleanPhoneNumber(rawNumber);
             try {
                 let payload = { messaging_product: "whatsapp", recipient_type: "individual", to: number };
-                if (isTemplate) {
+                
+                if (type === 'template') {
                     payload.type = "template";
                     payload.template = { name: templateName, language: { code: templateLang } };
+                } else if (type === 'audio' && audioData) {
+                    // HANDLE AUDIO UPLOAD FIRST
+                    // Convert Base64 to Blob/Buffer and Upload to WhatsApp Media API
+                    const buffer = Buffer.from(audioData, 'base64');
+                    const form = new FormData();
+                    form.append('messaging_product', 'whatsapp');
+                    // We must name the file with extension so Meta knows the type
+                    const blob = new Blob([buffer], { type: 'audio/ogg' });
+                    form.append('file', blob, 'voice_message.ogg');
+
+                    // 1. Upload
+                    const uploadRes = await fetch(`https://graph.facebook.com/${WHATSAPP_API_VERSION}/${phoneNumberId}/media`, {
+                        method: 'POST',
+                        headers: { 'Authorization': `Bearer ${whatsappToken}` },
+                        body: form
+                    });
+                    
+                    if (!uploadRes.ok) {
+                        const err = await uploadRes.text();
+                        throw new Error(`Media Upload Failed: ${err}`);
+                    }
+                    
+                    const uploadData = await uploadRes.json();
+                    const mediaId = uploadData.id;
+
+                    // 2. Send Message referencing ID
+                    payload.type = "audio";
+                    payload.audio = { id: mediaId };
+
                 } else {
+                    // Default Text
                     payload.type = "text";
                     payload.text = { body: message };
                 }
@@ -712,6 +742,7 @@ app.post('/api/whatsapp/broadcast', requireAuth, async (req, res) => {
                 );
                 results.success++;
                 await new Promise(resolve => setTimeout(resolve, 100));
+
             } catch (err) {
                 results.failed++;
                 const errorData = err.response?.data?.error;
