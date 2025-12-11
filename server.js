@@ -19,6 +19,17 @@ const { GoogleGenAI } = require('@google/genai');
 const { createClient } = require('@supabase/supabase-js');
 const { createClient: createRedisClient } = require('redis');
 
+// --- ANTI-CRASH HANDLERS ---
+// Prevent the server from stopping on unhandled async errors
+process.on('uncaughtException', (err) => {
+    console.error('🔥 CRITICAL: Uncaught Exception:', err);
+    // Keep process alive but log heavily
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('🔥 CRITICAL: Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 // --- SETUP ---
 let redisClient;
 
@@ -59,37 +70,39 @@ if (SUPABASE_URL && SUPABASE_KEY) {
     supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 }
 
-// --- AI CLIENT MANAGEMENT ---
-let ai;
+// --- AI CLIENT FACTORY (ROBUST FIX) ---
+// Instead of a global variable that can be lost or corrupted, 
+// we fetch the client ON DEMAND with caching.
+let cachedApiKey = process.env.GEMINI_API_KEY;
 
-// Function to initialize or refresh AI client
-async function initGenAI() {
-    try {
-        let apiKey = process.env.GEMINI_API_KEY;
-
-        // If not in Env, try DB
-        if (!apiKey && supabase) {
-            console.log("⚠️ No GEMINI_API_KEY in env, checking Supabase...");
-            const { data } = await supabase.from('app_settings').select('gemini_api_key').single();
-            if (data?.gemini_api_key) {
-                apiKey = data.gemini_api_key;
-                console.log("✅ GEMINI_API_KEY loaded from Supabase.");
-            }
-        }
-
-        if (apiKey) {
-            ai = new GoogleGenAI({ apiKey: apiKey });
-            console.log("🤖 Google GenAI Client Initialized.");
-        } else {
-            console.warn("❌ WARNING: Gemini API Key is missing. Chat features will fail.");
-        }
-    } catch (e) {
-        console.error("Failed to init GenAI:", e);
+async function getGenAIClient() {
+    // 1. Priority: Environment Variable
+    if (process.env.GEMINI_API_KEY) {
+        return new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
     }
-}
 
-// Init on start
-initGenAI();
+    // 2. Check Memory Cache
+    if (cachedApiKey) {
+        return new GoogleGenAI({ apiKey: cachedApiKey });
+    }
+
+    // 3. Fallback: Database (Supabase)
+    if (supabase) {
+        try {
+            const { data, error } = await supabase.from('app_settings').select('gemini_api_key').single();
+            if (data?.gemini_api_key) {
+                cachedApiKey = data.gemini_api_key; // Cache it
+                console.log("✅ API Key retrieved from Database");
+                return new GoogleGenAI({ apiKey: cachedApiKey });
+            }
+        } catch (e) {
+            console.warn("Could not fetch key from DB:", e.message);
+        }
+    }
+
+    // 4. Failure
+    throw new Error("CRITICAL: No Gemini API Key found in ENV or Database.");
+}
 
 // Middleware
 const upload = multer({ dest: 'uploads/' });
@@ -130,11 +143,8 @@ function requireAdmin(req, res, next) {
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function callGeminiWithRetry(modelName, params, retries = 3) {
-    if (!ai) {
-        // Try to re-init just in case
-        await initGenAI();
-        if (!ai) throw new Error("AI Service not initialized. Please configure API Key.");
-    }
+    // 1. GET FRESH CLIENT
+    const ai = await getGenAIClient(); 
     
     for (let i = 0; i < retries; i++) {
         try {
@@ -145,7 +155,9 @@ async function callGeminiWithRetry(modelName, params, retries = 3) {
         } catch (error) {
             // Check for Invalid API Key (400) specifically
             if (error.status === 400 && (error.message?.includes('API key') || error.message?.includes('INVALID_ARGUMENT'))) {
-                 console.error("🚨 Critical: Invalid API Key detected.");
+                 console.error("🚨 Critical: Invalid API Key detected during call.");
+                 // Clear cache to force DB refetch next time
+                 cachedApiKey = null; 
                  throw new Error("Invalid API Key. Please update it in Settings.");
             }
 
@@ -165,6 +177,7 @@ async function callGeminiWithRetry(modelName, params, retries = 3) {
 
 // --- UTILS: FILE PROCESSING ---
 async function waitForFileActive(fileName) {
+    const ai = await getGenAIClient();
     console.log(`⏳ Waiting for file ${fileName} to become ACTIVE in Gemini File API...`);
     try {
         // Wait loop for Gemini to process the file (Extract text/embeddings)
@@ -368,7 +381,10 @@ app.post('/api/config', requireAuth, requireAdmin, async (req, res) => {
         if (body.systemInstruction !== undefined) updateData.system_instruction = body.systemInstruction;
         if (body.marketingInstruction !== undefined) updateData.marketing_instruction = body.marketingInstruction;
         
-        if (shouldUpdate(body.geminiApiKey)) updateData.gemini_api_key = body.geminiApiKey;
+        if (shouldUpdate(body.geminiApiKey)) {
+            updateData.gemini_api_key = body.geminiApiKey;
+            cachedApiKey = body.geminiApiKey; // Update Cache immediately
+        }
         if (shouldUpdate(body.whatsappToken)) updateData.whatsapp_token = body.whatsappToken;
         if (shouldUpdate(body.whatsappPhoneNumberId)) updateData.whatsapp_phone_number_id = body.whatsappPhoneNumberId;
         if (shouldUpdate(body.verifyToken)) updateData.verify_token = body.verifyToken;
@@ -377,12 +393,6 @@ app.post('/api/config', requireAuth, requireAdmin, async (req, res) => {
 
         const { error } = await supabase.from('app_settings').upsert(updateData);
         if (error) throw error;
-
-        // Refresh AI Client immediately if Key changed
-        if (updateData.gemini_api_key) {
-            ai = new GoogleGenAI({ apiKey: updateData.gemini_api_key });
-            console.log("🤖 AI Client updated via Config API");
-        }
 
         res.json({ success: true });
     } catch (e) {
@@ -430,9 +440,7 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
         
-        // Ensure AI is ready
-        if (!ai) await initGenAI();
-        if (!ai) return res.status(500).json({ error: 'Gemini AI not initialized (check API Key)' });
+        const ai = await getGenAIClient();
 
         // 1. Check Duplicates via Hash
         const fileBuffer = await fsPromises.readFile(req.file.path);
@@ -525,15 +533,13 @@ app.delete('/api/files/:id', async (req, res) => {
         if (!doc) return res.status(404).json({ error: "File not found" });
 
         if (doc.google_name) {
-            if(!ai) await initGenAI();
-            if(ai) {
-                try {
-                    await ai.files.delete({ name: doc.google_name });
-                    // NEW: Explicit logging for verification
-                    console.log(`🗑️ Successfully deleted file from Gemini: ${doc.google_name}`);
-                } catch (googleError) {
-                    console.warn("Gemini delete warning:", googleError.message);
-                }
+            try {
+                const ai = await getGenAIClient();
+                await ai.files.delete({ name: doc.google_name });
+                // NEW: Explicit logging for verification
+                console.log(`🗑️ Successfully deleted file from Gemini: ${doc.google_name}`);
+            } catch (googleError) {
+                console.warn("Gemini delete warning:", googleError.message);
             }
         }
 
@@ -759,11 +765,16 @@ app.post('/api/chat', requireAuth, async (req, res) => {
             parts.push({ inlineData: { mimeType: mimeType || 'image/jpeg', data: image } });
             parts.push({ text: message || "Analyze this image." });
         } else {
-            parts.push({ text: message });
+            // Validate text message is not empty to avoid 400
+            if (message && message.trim().length > 0) {
+                parts.push({ text: message });
+            } else {
+                return res.status(400).json({ error: "Message content cannot be empty." });
+            }
         }
 
         // 3. Call Gemini with Retry (Fix for 503)
-        // This will now use the globally initialized 'ai' client (which tries DB first)
+        // This will now use the factory `getGenAIClient` internally
         const response = await callGeminiWithRetry('gemini-2.5-flash', {
             contents: [{ role: 'user', parts: parts }],
             config: { systemInstruction: instruction }
@@ -807,9 +818,9 @@ app.post('/webhook', async (req, res) => {
 
             for (const message of messages) {
                 const from = message.from;
-                if (!ai) await initGenAI();
-                if (!ai) {
-                    await sendWhatsAppMessage(businessPhoneNumberId, from, "System Error: AI not initialized. Please check server logs.");
+                // Pre-check client (will throw if no key)
+                try { await getGenAIClient(); } catch(e) {
+                    await sendWhatsAppMessage(businessPhoneNumberId, from, "System Error: AI not configured.");
                     continue;
                 }
 
