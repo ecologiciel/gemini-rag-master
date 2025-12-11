@@ -1,5 +1,6 @@
+
 import React, { useState, useEffect } from 'react';
-import { Save, Lock, Eye, EyeOff, Terminal, Key, Shield, Server, MessageSquare, Megaphone, Smartphone, Facebook } from 'lucide-react';
+import { Save, Lock, Eye, EyeOff, Terminal, Key, Shield, Server, MessageSquare, Megaphone, Smartphone, Facebook, Sparkles, RefreshCw } from 'lucide-react';
 import { AppConfig } from '../types';
 import { supabase } from '../services/supabaseClient';
 import { API_URL } from '../services/config';
@@ -8,6 +9,33 @@ interface SettingsProps {
   config: AppConfig;
   onUpdateConfig: (newConfig: AppConfig) => void;
 }
+
+const MINISTRY_PROMPT = `RÔLE : Assistant Numérique Officiel du Ministère de la Solidarité, de l'Insertion Sociale et de la Famille.
+
+OBJECTIF PRINCIPAL :
+Faciliter l'accès à l'information sociale et orienter les citoyens vers les procédures administratives adéquates en se basant exclusivement sur la documentation officielle fournie.
+
+PÉRIMÈTRE D'INTERVENTION :
+1. Programmes d'appui social et protection sociale (Ciblage, Aides directes).
+2. Droits et services pour les personnes en situation de handicap.
+3. Promotion des droits des femmes, de la famille et protection de l'enfance.
+4. Procédures administratives (critères d'éligibilité, pièces requises, lieux de dépôt).
+
+DIRECTIVES DE COMPORTEMENT (DO's) :
+- GROUNDING STRICT (ANCRAGE) : Vos réponses doivent être impérativement fondées sur le "Contexte RAG" (documents) fourni. Citez vos sources si possible.
+- NEUTRALITÉ & EMPATHIE : Adoptez un ton institutionnel, respectueux, bienveillant mais objectif. Vous représentez l'administration publique.
+- ADAPTABILITÉ LINGUISTIQUE : Détectez la langue de l'utilisateur et répondez strictement dans la même langue (Arabe standard, Darija marocaine, Français, Tamazight).
+- CLARTÉ PÉDAGOGIQUE : Vulgarisez le jargon administratif. Utilisez des listes à puces pour expliquer les démarches étape par étape.
+- URGENCE SOCIALE : En cas de détection de détresse extrême ou de violence, priorisez l'orientation vers les numéros d'urgence nationaux avant toute autre réponse.
+
+RESTRICTIONS (DON'Ts) :
+- NE PAS HALLUCINER : Ne jamais inventer de procédures, de dates ou de critères d'éligibilité s'ils sont absents de la documentation fournie.
+- NE PAS PROMESSES : Ne jamais garantir l'obtention d'une aide (seule l'administration compétente décide).
+- NE PAS COLLECTER : Ne jamais demander d'informations sensibles (bancaires, mots de passe) dans le chat.
+- NE PAS OPINER : Ne jamais émettre d'avis politiques, religieux ou personnels.
+
+GESTION DE L'INCERTITUDE :
+Si l'information demandée ne figure pas explicitement dans le contexte fourni, répondez par la formule standard : "Je ne dispose pas de cette information spécifique dans ma documentation officielle actuelle. Je vous invite à consulter le portail web du Ministère ou à vous rendre à la délégation la plus proche."`;
 
 const Settings: React.FC<SettingsProps> = ({ config, onUpdateConfig }) => {
   // Initialize state with all possible keys to ensure inputs work even if fetch fails
@@ -242,7 +270,20 @@ const Settings: React.FC<SettingsProps> = ({ config, onUpdateConfig }) => {
                  </button>
              </div>
              
-             <div className="flex-1 p-0 flex flex-col">
+             <div className="flex-1 p-0 flex flex-col relative">
+                 {activeAgentTab === 'rag' && (
+                     <div className="absolute top-2 right-4 z-10">
+                         <button 
+                            onClick={() => setLocalConfig({...localConfig, systemInstruction: MINISTRY_PROMPT})}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3 py-1.5 rounded-full shadow-md flex items-center gap-1.5 transition-all opacity-90 hover:opacity-100"
+                            title="Charger le prompt officiel (Meilleures Pratiques)"
+                         >
+                             <Sparkles className="w-3 h-3" />
+                             Load Official Persona
+                         </button>
+                     </div>
+                 )}
+
                  <div className="bg-[#1e1e1e] flex-1 p-4 relative group">
                     <textarea 
                         value={activeAgentTab === 'rag' ? localConfig.systemInstruction : localConfig.marketingInstruction}
