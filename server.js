@@ -403,13 +403,18 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
             mime_type: req.file.mimetype,
             size: req.file.size,
             status: 'success',
-            google_name: fileData.name,
+            google_name: fileData.name, // Ensure this column exists in DB!
             created_at: new Date()
         };
 
         if (supabase) {
             const { data, error } = await supabase.from('documents').insert([newDoc]).select().single();
-            if (error) throw error;
+            if (error) {
+                // ROLLBACK: If DB save fails (e.g. missing column), delete from Gemini to prevent orphaned files
+                console.warn(`⚠️ DB Error. Rolling back Gemini upload for ${fileData.name}...`);
+                await ai.files.delete({ name: fileData.name }).catch(e => console.error("Rollback delete failed", e));
+                throw error;
+            }
             newDoc = data;
         }
         
@@ -418,6 +423,13 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
 
     } catch (e) {
         console.error("Upload Error:", e);
+
+        // Specific Hint for the user's specific error (PGRST204)
+        if (e.message && (e.message.includes('google_name') || e.code === 'PGRST204')) {
+            console.error("\n🚨 DATABASE ERROR: Missing column 'google_name'.");
+            console.error("👉 SOLUTION: Run this SQL in Supabase: ALTER TABLE documents ADD COLUMN IF NOT EXISTS google_name text;\n");
+        }
+
         if (req.file && fs.existsSync(req.file.path)) await fsPromises.unlink(req.file.path).catch(() => {});
         res.status(500).json({ error: e.message });
     }
