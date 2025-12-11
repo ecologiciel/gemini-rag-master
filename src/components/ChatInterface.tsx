@@ -1,6 +1,7 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Bot, User, Sparkles, MoreVertical, Paperclip, Smile, Image as ImageIcon, Mic, Trash2, X } from 'lucide-react';
-import { Message, AppConfig } from '../types';
+import { AppConfig } from '../types';
 import { generateGeminiResponse } from '../services/geminiService';
 import { supabase } from '../services/supabaseClient';
 import { API_URL } from '../services/config';
@@ -10,7 +11,11 @@ interface ChatInterfaceProps {
 }
 
 // Extend Message type to support audioUrl and imageUrl UI properties without polluting global types
-interface ChatMessage extends Message {
+interface ChatMessage {
+    id: string;
+    role: 'user' | 'model';
+    content: string;
+    timestamp: Date;
     audioUrl?: string;
     imageUrl?: string;
 }
@@ -151,8 +156,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ config }) => {
               })
           });
 
-          if (!response.ok) throw new Error('Backend error');
           const data = await response.json();
+
+          if (!response.ok) {
+             throw new Error(data.error || 'Backend error');
+          }
           
           const aiMessage: ChatMessage = {
               id: (Date.now() + 1).toString(),
@@ -162,12 +170,15 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ config }) => {
           };
           setMessages((prev) => [...prev, aiMessage]);
 
-      } catch (error) {
+      } catch (error: any) {
           console.error("Audio send failed", error);
+          let errorMsg = "Error processing audio message.";
+          if (error.message.includes('API Key')) errorMsg = "⚠️ Configuration Error: Invalid Gemini API Key. Please update it in Settings.";
+          
           const errorMessage: ChatMessage = {
               id: Date.now().toString(),
               role: 'model',
-              content: "Error processing audio message. Please check connection.",
+              content: errorMsg,
               timestamp: new Date(),
           };
           setMessages((prev) => [...prev, errorMessage]);
@@ -244,11 +255,22 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ config }) => {
             body: JSON.stringify(bodyPayload)
           });
           
-          if (!response.ok) throw new Error('Backend error');
           const data = await response.json();
+          
+          if (!response.ok) {
+             throw new Error(data.error || 'Backend error');
+          }
+          
           responseText = data.response;
           setIsOfflineMode(false);
-      } catch (backendError) {
+      } catch (backendError: any) {
+          console.warn("Backend Error:", backendError.message);
+          
+          // Specific handling for API Key error
+          if (backendError.message && (backendError.message.includes('API Key') || backendError.message.includes('Invalid API Key'))) {
+              throw new Error("⚠️ Critical: The Gemini API Key is missing or invalid. Please go to Settings and configure it.");
+          }
+
           setIsOfflineMode(true);
           // Fallback only supports text for now in demo mode
           if (config.geminiApiKey && !currentImage) {
@@ -258,8 +280,8 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ config }) => {
                  config.systemInstruction
              );
           } else {
-             await new Promise(resolve => setTimeout(resolve, 1000));
-             responseText = "Server unreachable. Image analysis requires backend connection.";
+             // If we can't fallback locally (no key in frontend config)
+             throw new Error("Server unreachable and no local API Key configured.");
           }
       }
 
@@ -270,11 +292,11 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ config }) => {
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, aiMessage]);
-    } catch (error) {
+    } catch (error: any) {
       const errorMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
         role: 'model',
-        content: "Error generating response.",
+        content: error.message || "Error generating response.",
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, errorMessage]);

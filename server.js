@@ -39,7 +39,6 @@ initRedis();
 const app = express();
 
 // CRITICAL FIX FOR RAILWAY/HEROKU: Trust the load balancer
-// This prevents the "X-Forwarded-For" header error in logs
 app.set('trust proxy', 1);
 
 app.use(cors());
@@ -60,12 +59,37 @@ if (SUPABASE_URL && SUPABASE_KEY) {
     supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 }
 
-// Global AI Client (will be updated via config)
+// --- AI CLIENT MANAGEMENT ---
 let ai;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-if (GEMINI_API_KEY) {
-    ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+
+// Function to initialize or refresh AI client
+async function initGenAI() {
+    try {
+        let apiKey = process.env.GEMINI_API_KEY;
+
+        // If not in Env, try DB
+        if (!apiKey && supabase) {
+            console.log("⚠️ No GEMINI_API_KEY in env, checking Supabase...");
+            const { data } = await supabase.from('app_settings').select('gemini_api_key').single();
+            if (data?.gemini_api_key) {
+                apiKey = data.gemini_api_key;
+                console.log("✅ GEMINI_API_KEY loaded from Supabase.");
+            }
+        }
+
+        if (apiKey) {
+            ai = new GoogleGenAI({ apiKey: apiKey });
+            console.log("🤖 Google GenAI Client Initialized.");
+        } else {
+            console.warn("❌ WARNING: Gemini API Key is missing. Chat features will fail.");
+        }
+    } catch (e) {
+        console.error("Failed to init GenAI:", e);
+    }
 }
+
+// Init on start
+initGenAI();
 
 // Middleware
 const upload = multer({ dest: 'uploads/' });
@@ -106,18 +130,25 @@ function requireAdmin(req, res, next) {
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function callGeminiWithRetry(modelName, params, retries = 3) {
-    if (!ai) throw new Error("AI Service not initialized");
+    if (!ai) {
+        // Try to re-init just in case
+        await initGenAI();
+        if (!ai) throw new Error("AI Service not initialized. Please configure API Key.");
+    }
     
     for (let i = 0; i < retries; i++) {
         try {
-            // Determine if using generateContent or generateImages based on context, 
-            // but for now, we wrap generateContent as it is the primary chat function.
-            // Using ai.models.generateContent pattern from Google GenAI SDK
             return await ai.models.generateContent({
                 model: modelName,
                 ...params
             });
         } catch (error) {
+            // Check for Invalid API Key (400) specifically
+            if (error.status === 400 && (error.message?.includes('API key') || error.message?.includes('INVALID_ARGUMENT'))) {
+                 console.error("🚨 Critical: Invalid API Key detected.");
+                 throw new Error("Invalid API Key. Please update it in Settings.");
+            }
+
             // Retry on 503 (Overloaded) or 429 (Rate Limit) or 500 (Internal)
             const isTransient = error.status === 503 || error.status === 429 || error.status === 500;
             
@@ -347,8 +378,10 @@ app.post('/api/config', requireAuth, requireAdmin, async (req, res) => {
         const { error } = await supabase.from('app_settings').upsert(updateData);
         if (error) throw error;
 
+        // Refresh AI Client immediately if Key changed
         if (updateData.gemini_api_key) {
             ai = new GoogleGenAI({ apiKey: updateData.gemini_api_key });
+            console.log("🤖 AI Client updated via Config API");
         }
 
         res.json({ success: true });
@@ -396,6 +429,9 @@ app.get('/api/files', async (req, res) => {
 app.post('/api/upload', upload.single('file'), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+        
+        // Ensure AI is ready
+        if (!ai) await initGenAI();
         if (!ai) return res.status(500).json({ error: 'Gemini AI not initialized (check API Key)' });
 
         // 1. Check Duplicates via Hash
@@ -488,13 +524,16 @@ app.delete('/api/files/:id', async (req, res) => {
         const { data: doc } = await supabase.from('documents').select('*').eq('id', req.params.id).single();
         if (!doc) return res.status(404).json({ error: "File not found" });
 
-        if (doc.google_name && ai) {
-            try {
-                await ai.files.delete({ name: doc.google_name });
-                // NEW: Explicit logging for verification
-                console.log(`🗑️ Successfully deleted file from Gemini: ${doc.google_name}`);
-            } catch (googleError) {
-                console.warn("Gemini delete warning:", googleError.message);
+        if (doc.google_name) {
+            if(!ai) await initGenAI();
+            if(ai) {
+                try {
+                    await ai.files.delete({ name: doc.google_name });
+                    // NEW: Explicit logging for verification
+                    console.log(`🗑️ Successfully deleted file from Gemini: ${doc.google_name}`);
+                } catch (googleError) {
+                    console.warn("Gemini delete warning:", googleError.message);
+                }
             }
         }
 
@@ -724,6 +763,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         }
 
         // 3. Call Gemini with Retry (Fix for 503)
+        // This will now use the globally initialized 'ai' client (which tries DB first)
         const response = await callGeminiWithRetry('gemini-2.5-flash', {
             contents: [{ role: 'user', parts: parts }],
             config: { systemInstruction: instruction }
@@ -741,7 +781,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
         }
         res.json({ response: response.text });
     } catch (e) {
-        console.error("Chat Error:", e);
+        console.error("Chat Error:", e.message);
         res.status(500).json({ error: e.message });
     }
 });
@@ -767,8 +807,9 @@ app.post('/webhook', async (req, res) => {
 
             for (const message of messages) {
                 const from = message.from;
+                if (!ai) await initGenAI();
                 if (!ai) {
-                    await sendWhatsAppMessage(businessPhoneNumberId, from, "System Error: AI not initialized.");
+                    await sendWhatsAppMessage(businessPhoneNumberId, from, "System Error: AI not initialized. Please check server logs.");
                     continue;
                 }
 
