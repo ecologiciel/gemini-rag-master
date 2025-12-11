@@ -16,6 +16,15 @@ export interface Message {
   timestamp: Date;
 }
 
+// NEW: For Admin Inbox
+export interface ChatSession {
+    userId: string;
+    lastMessage: string;
+    lastActive: Date;
+    channel: 'whatsapp' | 'web';
+    unreadCount?: number;
+}
+
 export interface UploadedFile {
   id: string;
   name: string;
