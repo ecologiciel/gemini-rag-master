@@ -650,7 +650,7 @@ app.post('/api/chat', requireAuth, async (req, res) => {
 
         // 1. Fetch relevant docs from DB (Long Context RAG)
         let fileData = [];
-        let instruction = "You are a helpful assistant.";
+        let instruction = "RÔLE: Assistant officiel du Ministère de la Solidarité (Maroc). Mission: Informer sur les services sociaux (RSU, RNP, Handicap) en se basant UNIQUEMENT sur le contexte fourni.";
         if (supabase) {
             const { data: docs } = await supabase.from('documents').select('uri, mime_type, name').eq('status', 'success');
             if (docs) {
@@ -733,7 +733,7 @@ app.post('/webhook', async (req, res) => {
 
                 // Fetch RAG Context
                 let fileData = [];
-                let instruction = "You are a helpful assistant.";
+                let instruction = "RÔLE: Assistant officiel du Ministère de la Solidarité (Maroc). Mission: Informer sur les services sociaux (RSU, RNP, Handicap) en se basant UNIQUEMENT sur le contexte fourni.";
                 if (supabase) {
                     const { data: docs } = await supabase.from('documents').select('uri, mime_type').eq('status', 'success');
                     if (docs) {

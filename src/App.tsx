@@ -8,14 +8,26 @@ import KnowledgeBase from './components/KnowledgeBase';
 import Settings from './components/Settings';
 import StrategyHub from './components/StrategyHub'; 
 import Profile from './components/Profile';
-import UserManagement from './components/UserManagement'; // New Import
+import UserManagement from './components/UserManagement';
 import Auth from './components/Auth';
 import { ViewState, AppConfig, KPIStats } from './types';
 import { Loader2 } from 'lucide-react';
 
 const defaultConfig: AppConfig = {
   geminiApiKey: '',
-  systemInstruction: `You are a helpful and polite assistant.`,
+  systemInstruction: `RÔLE : Assistant Virtuel Officiel du Ministère de la Solidarité, de l'Insertion Sociale et de la Famille (Maroc).
+
+CONTEXTE :
+Vous êtes le premier point de contact numérique pour les citoyens marocains. Vous devez répondre aux questions concernant les programmes sociaux (RSU/RNP, Daam, Cartes d'handicap), la protection de l'enfance, et l'autonomisation des femmes, en vous basant sur le portail social.gov.ma.
+
+DIRECTIVES DE RÉPONSE (GEMINI 2.5) :
+1. GROUNDING STRICT : Répondez UNIQUEMENT en utilisant les informations présentes dans le contexte fourni (Documents RAG). Si l'information est absente, dites : "Je ne dispose pas de cette information officielle pour le moment. Veuillez consulter le portail social.gov.ma ou visiter la délégation la plus proche." Ne jamais inventer de procédures.
+2. TON ET STYLE : Institutionnel, empathique, respectueux et clair. Vous représentez l'État. Évitez le jargon technique complexe sans explication.
+3. LANGUE : Détectez automatiquement la langue de l'utilisateur (Arabe, Darija, Français, Tamazight) et répondez dans la même langue.
+4. STRUCTURE : Pour les démarches administratives, utilisez impérativement des listes à puces (1., 2., 3.) pour la clarté.
+5. URGENCE SOCIALE : Si l'utilisateur mentionne une violence, un danger immédiat ou une situation de grande détresse, donnez immédiatement les numéros verts appropriés avant toute autre réponse.
+
+FORMAT DE SORTIE : Markdown clair et aéré.`,
   whatsappToken: '',
   messengerToken: '',
   instagramToken: '',
@@ -34,29 +46,29 @@ const mockStats: KPIStats = {
   estimatedCost: 12.45,
   totalTokens: { input: 450000, output: 120000 },
   topDocuments: [
-      { name: 'Product_Manual_v2.pdf', usage_count: 342, last_used_at: new Date().toISOString() },
-      { name: 'Pricing_2025.docx', usage_count: 215, last_used_at: new Date().toISOString() },
-      { name: 'Return_Policy.txt', usage_count: 120, last_used_at: new Date().toISOString() },
+      { name: 'Guide_RNP_RSU_2025.pdf', usage_count: 342, last_used_at: new Date().toISOString() },
+      { name: 'Procedure_Carte_Handicap.docx', usage_count: 215, last_used_at: new Date().toISOString() },
+      { name: 'Centres_Protection_Enfance.txt', usage_count: 120, last_used_at: new Date().toISOString() },
   ],
   semantic: {
       sentiment: [
-          { name: 'Positive', value: 65, fill: '#10b981' },
-          { name: 'Neutral', value: 25, fill: '#6366f1' },
-          { name: 'Negative', value: 10, fill: '#f43f5e' }
+          { name: 'Positif', value: 65, fill: '#10b981' },
+          { name: 'Neutre', value: 25, fill: '#6366f1' },
+          { name: 'Négatif', value: 10, fill: '#f43f5e' }
       ],
       topics: [
-          { topic: 'Pricing', count: 120 },
-          { topic: 'Technical Support', count: 85 },
-          { topic: 'Refunds', count: 45 },
-          { topic: 'Availability', count: 30 }
+          { topic: 'Inscription RSU', count: 120 },
+          { topic: 'Renouvellement Carte', count: 85 },
+          { topic: 'Aides Veuves', count: 45 },
+          { topic: 'Localisation Délégation', count: 30 }
       ],
       retentionRate: 78,
       engagementRate: 3.5,
       fallbackRate: 5.8
   },
   unansweredQuestions: [
-      { query: "Do you offer shipping to Mars?", count: 1, last_asked: new Date().toISOString() },
-      { query: "How do I hack the mainframe?", count: 1, last_asked: new Date().toISOString() }
+      { query: "Quels sont les papiers pour l'aide au logement ?", count: 1, last_asked: new Date().toISOString() },
+      { query: "Date versement allocation naissance ?", count: 1, last_asked: new Date().toISOString() }
   ]
 };
 
