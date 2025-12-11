@@ -249,9 +249,9 @@ app.put('/api/users/:id', requireAuth, requireAdmin, (req, res) => {
 
 app.delete('/api/users/:id', requireAuth, requireAdmin, (req, res) => {
     const { id } = req.params;
-    const initialLength = mockUsers.length;
-    mockUsers = mockUsers.filter(u => u.id !== id);
-    if (mockUsers.length < initialLength) {
+    const index = mockUsers.findIndex(u => u.id === id);
+    if (index !== -1) {
+        mockUsers.splice(index, 1);
         res.json({ success: true });
     } else {
         res.status(404).json({ error: "User not found" });
@@ -445,6 +445,8 @@ app.delete('/api/files/:id', async (req, res) => {
         if (doc.google_name && ai) {
             try {
                 await ai.files.delete({ name: doc.google_name });
+                // NEW: Explicit logging for verification
+                console.log(`🗑️ Successfully deleted file from Gemini: ${doc.google_name}`);
             } catch (googleError) {
                 console.warn("Gemini delete warning:", googleError.message);
             }
