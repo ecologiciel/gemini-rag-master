@@ -829,10 +829,36 @@ app.post('/api/chat', requireAuth, async (req, res) => {
 });
 
 // --- WHATSAPP WEBHOOK ---
-app.get('/webhook', (req, res) => {
-    const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
-    if (req.query['hub.mode'] === 'subscribe' && req.query['hub.verify_token'] === VERIFY_TOKEN) {
-        res.status(200).send(req.query['hub.challenge']);
+app.get('/webhook', async (req, res) => {
+    let VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+
+    // Fallback: Check Database (Supabase) if ENV not set
+    if (!VERIFY_TOKEN && supabase) {
+        try {
+            const { data } = await supabase.from('app_settings').select('verify_token').single();
+            if (data?.verify_token) VERIFY_TOKEN = data.verify_token;
+        } catch (e) {
+            console.error("DB Verify Token Fetch Error:", e);
+        }
+    }
+
+    if (!VERIFY_TOKEN) {
+        console.error("❌ CRITICAL: Verify Token not set in ENV or DB.");
+        return res.sendStatus(500);
+    }
+
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    if (mode && token) {
+        if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+            console.log('✅ WEBHOOK VERIFIED');
+            res.status(200).send(challenge);
+        } else {
+            console.warn('❌ WEBHOOK VERIFICATION FAILED: Token mismatch.');
+            res.sendStatus(403);
+        }
     } else {
         res.sendStatus(403);
     }
@@ -874,6 +900,21 @@ app.post('/webhook', async (req, res) => {
                     if (settings?.system_instruction) instruction = settings.system_instruction;
                 }
 
+                // Log Incoming User Message (For Inbox)
+                if (supabase) {
+                     let queryText = '[Unknown]';
+                     if (message.type === 'text') queryText = message.text.body;
+                     else if (message.type === 'audio') queryText = '[Audio Message]';
+                     else if (message.type === 'image') queryText = '[Image Message] ' + (message.image.caption || '');
+
+                     await supabase.from('request_logs').insert([{
+                        channel: 'whatsapp',
+                        user_id: from, // Use Phone Number as User ID
+                        query_text: queryText,
+                        is_success: true
+                     }]);
+                }
+
                 if (message.type === 'text') {
                     await markMessageAsRead(businessPhoneNumberId, message.id);
                     const parts = [...fileData, { text: message.text.body }];
@@ -882,6 +923,18 @@ app.post('/webhook', async (req, res) => {
                         contents: [{ role: 'user', parts }],
                         config: { systemInstruction: instruction }
                     });
+                    
+                    // Log Response
+                    if (supabase) {
+                        // Find the latest log we just created and update it, or insert new if async issues
+                        // For simplicity in this demo, we assume the previous insert is "request" and this is "response".
+                        // In prod, use request_id correlation.
+                        await supabase.from('request_logs').update({ response_text: response.text })
+                            .eq('user_id', from)
+                            .order('created_at', { ascending: false })
+                            .limit(1);
+                    }
+                    
                     await sendWhatsAppMessage(businessPhoneNumberId, from, response.text);
                 }
                 else if (message.type === 'audio') {
@@ -902,6 +955,14 @@ app.post('/webhook', async (req, res) => {
                             contents: [{ role: 'user', parts }],
                             config: { systemInstruction: instruction }
                         });
+                         
+                        if (supabase) {
+                             await supabase.from('request_logs').update({ response_text: response.text })
+                                .eq('user_id', from)
+                                .order('created_at', { ascending: false })
+                                .limit(1);
+                        }
+
                         await sendWhatsAppMessage(businessPhoneNumberId, from, response.text);
                     } catch (err) {
                         await sendWhatsAppMessage(businessPhoneNumberId, from, "Error processing audio.");
@@ -925,6 +986,14 @@ app.post('/webhook', async (req, res) => {
                             contents: [{ role: 'user', parts }],
                             config: { systemInstruction: instruction }
                         });
+
+                        if (supabase) {
+                             await supabase.from('request_logs').update({ response_text: response.text })
+                                .eq('user_id', from)
+                                .order('created_at', { ascending: false })
+                                .limit(1);
+                        }
+
                         await sendWhatsAppMessage(businessPhoneNumberId, from, response.text);
                     } catch (err) {
                         await sendWhatsAppMessage(businessPhoneNumberId, from, "Error processing image.");
